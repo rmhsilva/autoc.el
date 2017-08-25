@@ -1,3 +1,4 @@
+
 // autoc examples
 
 
@@ -6,7 +7,7 @@
   (dotimes (n x)
     (insert "void;")
     (newline-and-indent))
-  autoc_end
+  autoc#
 */
 
 // Result:
@@ -14,7 +15,7 @@
 void;
 void;
 void;
-// autoc_end
+// autoc#
 
 
 
@@ -22,4 +23,9 @@ void;
 //autoc:block block1
 some;
 text;
-//autoc:end
+//autoc#
+
+
+//autoc:message "hello world"
+
+//autoc#
