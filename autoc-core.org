@@ -1,0 +1,431 @@
+#+TITLE: autoc
+#+AUTHOR: ric@rmhsilva.com
+
+Terse in-file code generation.
+
+Reminder: =C-c '= to edit source blocks.
+
+*WARNING* this extension is a security concern. It reads and evaluates arbitrary
+elisp code in potentiall *any* file. You've been warned.
+
+
+* Design Overview
+
+  =autoc-mode= allows you to embed /directives/ into Emacs buffers in order to
+  perform arbitrary text generation.
+
+  A /source/ defines some kind of data that can be used later on to perform text
+  generation.
+
+  A /sink/ takes some input data and generates some text.
+
+  Sources and sinks are embedded into comments in source code, in special
+  comments marked out with "autoc:".
+
+  In the most flexible case, you can define arbitrary elisp that you can later
+  evaluate.
+
+  TODO sandbox arbitrary code (https://github.com/joelmccracken/elisp-sandbox).
+
+
+** Markers
+   All autoc functionality is accessed via "autoc" markers in the source code
+   comments. These are the markers currently implemented:
+
+#+BEGIN_SRC emacs-lisp :tangle yes
+(defvar autoc-marker-block-op "autoc:"
+  "Operate on block (requires block end marker)")
+
+(defvar autoc-marker-end "autoc#"
+  "Block end marker")
+
+(defvar autoc-marker-command "autoc!"
+  "Autoc command (single line)")
+#+END_SRC
+
+
+** Requirements
+
+   We require a few external libraries.
+
+   #+NAME requires
+   #+BEGIN_SRC emacs-lisp :tangle yes
+(require 's)
+(require 'thing-at-point)
+   #+END_SRC
+
+
+* Minor Mode
+
+  This is a minor mode! See http://nullprogram.com/blog/2013/02/06/.
+
+  There are some special variables...
+
+  #+begin_src emacs-lisp :tangle yes
+    (make-variable-buffer-local
+     (defvar *autoc-marker* nil
+       "Marker used to delimit autoc blocks"))
+
+    (defvar autoc-mode-marker-alist
+      '((c-mode "autoc:")))
+
+    (defvar autoc-directives nil
+      "List of directives autoc knows about")
+  #+end_src
+
+** Definition
+
+   #+begin_src emacs-lisp :tangle yes
+    ;;;###autoload
+    (define-minor-mode autoc-mode
+      "Automatic embedded code generation"
+      :lighter " autoc"
+      :keymap (make-sparse-keymap)
+      (progn
+        (setq *autoc-marker* (car (alist-get major-mode autoc-mode-marker-alist)))
+        (autoc-load-sources)))
+   #+end_src
+
+   It is not global, and we'll define the keymap separately later on.
+
+** Keymap
+
+   #+begin_src emacs-lisp :tangle yes
+    (let ((map autoc-mode-map))
+        ;;(define-key map (kbd "C-c C-c") 'autoc-evaluate-block)
+        map)
+   #+end_src
+
+** Font Lock
+
+   TODO: Highlight the directives and delimiters
+
+
+* Autoc block manipulation
+
+  Core functionality. We need to do a few things
+  - Find next end marker
+  - Get the text between the current line and the next end marker
+  - Clear the text between the current marker and the next end marker
+  -
+
+** Block movements and operations
+
+   So first, here are some block manipulation routines. We need to be able to
+   deal with blocks without worrying about them.
+
+   Here we define where a block starts and ends.
+
+   #+BEGIN_SRC emacs-lisp :tangle yes
+     (defun autoc-block-start ()
+       "Return point at the start of the current block
+
+         e.g. with point before 'block':
+
+         autoc:something
+         inside |block
+         autoc#
+
+         point returned:
+
+         autoc:something
+         |inside block
+         autoc:end"
+       (save-excursion
+         (end-of-line)
+         (search-backward *autoc-marker*)
+         (if (string-match "autoc:end" (thing-at-point 'line t))
+             (progn
+               (previous-line)
+               (autoc-block-start))
+           (progn
+             (next-line)
+             (line-beginning-position)))))
+
+     (defun autoc-block-end ()
+       "Return point at the end of the current block
+
+         e.g. with point before 'block':
+
+         autoc:something
+         inside |block
+         autoc:end
+
+         point returned:
+
+         autoc:something
+         inside block
+         |autoc:end"
+       (save-excursion
+         (goto-char (line-beginning-position))
+         (search-forward "autoc:end")
+         (line-beginning-position)))
+   #+END_SRC
+
+   Now that we have the start and end of the blocks defined, we can do
+   operations on blocks.
+
+   #+BEGIN_SRC emacs-lisp :tangle yes
+  (defun autoc-kill-block ()
+    "Delete all content in the current block"
+    (let ((start (autoc-block-start))
+            (end (autoc-block-end)))
+        (message (string (count-lines start end)))
+        (when (> (count-lines start end) 0)
+          (kill-region start end))))
+
+  (defun autoc-block-contents ()
+    "Get the contents of the current block"
+    (s-trim (buffer-substring-no-properties (autoc-block-start)
+                                            (autoc-block-end))))
+
+  (defun autoc-check-in-block ()
+    "Ensure we are in a block"
+    ;; TODO
+    t)
+   #+END_SRC
+
+
+** Directive Syntax
+
+   We can also retrieve the current block's directive and arguments.
+
+   #+BEGIN_SRC emacs-lisp :tangle yes
+     (defun autoc-get-marker-line ()
+       "Get the full starting marker line for the current block"
+       (save-excursion
+         (goto-char (autoc-block-start))
+         (previous-line)
+         (s-trim (thing-at-point 'line t))))
+
+     (defun autoc-get-directive ()
+       "Get the directive in the current block as a symbol
+
+     e.g.
+
+     autoc:lines bla
+     ...
+
+     returns 'lines"
+       (let ((line (autoc-get-marker-line)))
+         (string-match ":\\([^ ]*\\)" line)
+         (intern (concat "autoc--directive-" (match-string 1 line)))))
+
+     (defun autoc-get-args ()
+       "Get the arguments of the current block as a list
+
+     e.g.
+
+     autoc:lines bla
+     ...
+
+     returns ('bla)"
+       (let ((line (autoc-get-marker-line)))
+         (string-match ":[^ ]* \\(.*\\)" line)
+         (map 'list #'read (s-split " " (match-string 1 line)))))
+
+   #+END_SRC
+
+
+
+* Directives
+
+  All directives are functions, with names starting with "autoc--directive-".
+  They are passed the block arguments as a list, and the block contents.
+
+  Now we can run directives when we encounter them.
+
+#+BEGIN_SRC emacs-lisp :tangle yes
+  (defun autoc-run-directive ()
+    "Evaluate the current autoc directive block"
+    (interactive)
+    (autoc-check-in-block)
+    (let ((block (autoc-block-contents))
+          (op (autoc-get-directive))
+          (args (autoc-get-args)))
+      ;; TODO if len op is 1, lookup in aliases
+      ;; TODO change calling method based on whether it is a generator?
+      (funcall op args block)))
+  #+END_SRC
+
+  Or run them all at once.
+
+  #+begin_src emacs-lisp :tangle yes
+    (defun autoc-run-all-directives ()
+      "Find all autoc directives in the buffer and load them. Then
+    run all generation directives."
+      (goto-char (point-min))
+      (while (search-forward *autoc-marker*)
+        (autoc-run-directive)))
+  #+end_src
+
+
+  Types of directives
+
+  #+BEGIN_SRC emacs-lisp :tangle yes
+    (defmacro defsource (name lambda-list &rest body)
+      (let ((fullname (intern (concat "autoc--directive-" (symbol-name name))))
+            (args (gensym "ARGS")))
+        `(defun ,fullname (block-content ,args)
+           (destructuring-bind ,lambda-list ,args
+             ,@body))))
+
+
+    (defmacro defgenerator (name lambda-list &rest body)
+      (let ((fullname (intern (concat "autoc--directive-" (symbol-name name))))
+            (args (gensym "ARGS")))
+        `(defun ,fullname (,args &optional block)
+           ;; block unused
+           (autoc-kill-block)
+           (destructuring-bind ,lambda-list ,args
+             ,@body))))
+  #+END_SRC
+
+
+** Non-Generative Directives
+
+   These directives do not directly generate text. They are used for defining
+   things to be used by generator directives below.
+
+   We need a buffer local variable to hold source data.
+
+   #+BEGIN_SRC emacs-lisp :tangle yes
+    (make-variable-buffer-local
+     (defvar autoc-source-text-alist nil
+       "alist of source text blocks - key is block name"))
+   #+END_SRC
+
+*** % [defun]
+
+    Define arbitrary functions in your source code, which can be called later
+    with the funcall directive. All other sources can be implemented with this.
+
+    TODO: We probably need some safety / sandboxing...
+
+    #+begin_example
+     //autoc:defun insert_text (arg1 &key blah)
+     // implicit progn here
+     // (autoc-insert (format nil "Hello ~a" arg1))
+     //autoc:end
+    #+end_example
+
+    #+BEGIN_SRC emacs-lisp :tangle yes
+     (def-source defun (block-text lambda-list)
+       "Define an arbitrary function"
+       (lambda
+         ))
+    #+END_SRC
+
+
+*** ! [defalias]
+
+    Define an alias for an autoc directive.
+
+#+BEGIN_EXAMPLE
+  //autoc:defalias ^ some-directive
+#+END_EXAMPLE
+
+This will allow you to use =autoc:^= instead of =autoc:some-directive= in other
+blocks.
+
+*** = [block]
+
+    The entire text block between the markers is loaded into a buffer local variable.
+
+    #+BEGIN_EXAMPLE
+//autoc:block block-var
+hello
+world
+//autoc:end
+
+-> block-var := "hello\nworld"
+    #+END_EXAMPLE
+
+    Implementation:
+
+    #+BEGIN_SRC emacs-lisp :tangle yes
+     (defun autoc--directive-block (args content)
+       (setf (alist-get name autoc-source-text-alist)
+             (autoc-block-contents)))
+    #+END_SRC
+
+
+*** - [lines]
+
+    Load the block into a buffer local variable as a list of lines, optionally
+    doing some processing on them first. The processing is a function that is
+    passed each line and returns the new line.
+
+    #+BEGIN_EXAMPLE
+//autoc:lines lines-var string-upcase
+hello
+world
+//autoc:end
+
+-> lines-var := ("HELLO" "WORLD")
+    #+END_EXAMPLE
+
+    Implementation:
+
+    #+BEGIN_SRC emacs-lisp :tangle yes
+      (defsource block (name fn content)
+        (setf (alist-get name autoc-source-text-alist)
+              (map 'list fn (s-split "\n" content))))
+    #+END_SRC
+
+
+** Generator Directives
+
+   These are all functions that generate the text content of the current block.
+   When the directive is run, the block contents are first cleared and then the
+   function is run. The function operates directly in the Emacs buffer, so be
+   careful :).
+
+   Possibly there should be something in between - e.g. the new block contents
+   are returned by the function. I think not. This is more general.
+
+   #+BEGIN_SRC emacs-lisp :tangle yes
+  (defmacro autoc-def-generator (name &body body)
+    `(setf (alist-get name autoc-sources-alist)
+           ()))
+   #+END_SRC
+
+*** \ [funcall]
+
+    Call a function previously defined with /defun/.
+
+
+*** > [format-lines]
+
+    Take a source block and a format string and apply it to each line in the
+    source block to generate the new content.
+
+    #+begin_example
+     //autoc:format-lines lines-var "FOO($);"
+     FOO(line1);
+     FOO(line2);
+     //autoc:end
+    #+end_example
+
+    Definition:
+
+    #+begin_src emacs-lisp :tangle yes
+     (defun autoc--directive-format-lines (lines fmt)
+       (dolist (l (s-split "\n" lines))
+         (newline-and-indent)
+         (insert (replace-regexp-in-string "$" l fmt))))
+    #+end_src
+
+
+* Directive Aliases
+
+  Instead of using the full directive names, you can use aliases for the
+  commonly used directives. This can be customised.
+
+  #+begin_src emacs-lisp :tangle yes
+       ;; TODO defcustom
+       (defvar autoc-aliases-alist
+         '(("=" . autoc--directive-block)
+           ("\\" . autoc--directive-funcall)
+           (">" . autoc--directive-format-lines)))
+  #+end_src
