@@ -21,11 +21,10 @@ void;
 
 
 //autoc:block block1
-some;
-text;
+
 //autoc#
 
 
-//autoc:message "hello world"
+//autoc:message "hello world woooo"
 
 //autoc#

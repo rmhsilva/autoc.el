@@ -1,29 +1,24 @@
 #+TITLE: autoc
 #+AUTHOR: ric@rmhsilva.com
 
-Terse in-file code generation.
+Terse and flexible in-file code generation.
 
 Reminder: =C-c '= to edit source blocks.
 
 *WARNING* this extension is a security concern. It reads and evaluates arbitrary
-elisp code in potentiall *any* file. You've been warned.
+elisp code in potentially *any* file. You've been warned.
 
 
-* Design Overview
+* Overview
 
   =autoc-mode= allows you to embed /operations/ into Emacs buffers in order to
   perform arbitrary text generation.
 
-  A /source/ defines some kind of data that can be used later on to perform text
-  generation.
-
-  A /sink/ takes some input data and generates some text.
-
-  Sources and sinks are embedded into comments in source code, in special
-  comments marked out with "autoc:".
-
   In the most flexible case, you can define arbitrary elisp that you can later
   evaluate.
+
+  More usefully, a number of operations are predefined to let you work with
+  source code.
 
   TODO sandbox arbitrary code (https://github.com/joelmccracken/elisp-sandbox).
 
@@ -87,7 +82,12 @@ elisp code in potentiall *any* file. You've been warned.
                      (buffer-substring-no-properties (point)
                                                      (line-end-position))
                      'ignore-case))
+   #+END_SRC
 
+   We want to be able to find the next/previous marker in the buffer, so we can
+   jump between them.
+
+   #+BEGIN_SRC emacs-lisp :tangle yes
   (defun autoc-previous-marker (&optional suffix)
     "Return point at the start of the previous autoc marker. If
      suffix is provided, the marker must have the given suffix"
@@ -103,7 +103,7 @@ elisp code in potentiall *any* file. You've been warned.
     "Return point at the start of the next autoc marker"
     (save-excursion
       (when (search-forward autoc-marker-prefix nil t)
-        ;; search-forward puts point at end of marker
+        ;; search-forward puts point at end of marker, so move left:
         (left-char (length autoc-marker-prefix))
         (if (autoc-word-at-point-is-marker-p suffix)
             (point)
@@ -114,7 +114,9 @@ elisp code in potentiall *any* file. You've been warned.
 
 ** Argument Parsing
 
-   We can retrieve the current marker's arguments.
+   We can retrieve the current marker's arguments, which include *everything*
+   after the marker until the end of the line. We read the whole thing in as an
+   elisp list.
 
    #+BEGIN_SRC emacs-lisp :tangle yes
      (defun autoc-get-marker-args (line)
@@ -157,8 +159,8 @@ elisp code in potentiall *any* file. You've been warned.
              (next-line)
              (line-beginning-position)))))
 
-     (defun autoc-block-end ()
-       "Return point at the end of the current block
+     (defun autoc-block-end (start)
+       "Return point at the end of the block starting at `start'
 
                    e.g. with point before 'block':
 
@@ -172,11 +174,33 @@ elisp code in potentiall *any* file. You've been warned.
                    inside block
                    |autoc:end"
        (save-excursion
-         (goto-char (line-beginning-position))
+         (goto-char start)
          (let ((pos (autoc-next-marker autoc-marker-end)))
            (when pos
              (goto-char pos)
              (line-beginning-position)))))
+   #+END_SRC
+
+   We can check whether we are in a block, which will be useful later.
+
+   #+BEGIN_SRC emacs-lisp :tangle yes
+     (defun autoc-in-block-p ()
+       "Return t if point is on any line in a block, including the start and end marker lines"
+       (interactive)
+       (let* ((start (autoc-block-start))
+              (end (autoc-block-end start))
+              (pos (line-number-at-pos)))
+         (and start
+              end
+              (>= pos (- (line-number-at-pos start) 1))
+              (<= pos (line-number-at-pos end)))))
+
+     (defmacro autoc-when-in-block (&rest body)
+       "Evaluate `body' if currently in a block, alerting the user otherwise"
+       `(if (autoc-in-block-p)
+            (progn
+              ,@body)
+          (message "autoc: not in a block")))
    #+END_SRC
 
    Now that we have the start and end of the blocks defined, we can do
@@ -186,16 +210,16 @@ elisp code in potentiall *any* file. You've been warned.
      (defun autoc-kill-block ()
        "Delete all content in the current block"
        (interactive)
-       (let ((start (autoc-block-start))
-             (end (autoc-block-end)))
-         (message (string (count-lines start end)))
+       (let* ((start (autoc-block-start))
+              (end (autoc-block-end start)))
          (when (> (count-lines start end) 0)
            (kill-region start end))))
 
      (defun autoc-block-contents ()
        "Get the contents of the current block"
-       (s-trim (buffer-substring-no-properties (autoc-block-start)
-                                               (autoc-block-end))))
+       (let ((start (autoc-block-start))
+             (end (autoc-block-end start)))
+         (s-trim (buffer-substring-no-properties start end))))
 
      (defun autoc-block-get-marker-line ()
        "Get the full starting marker line for the current block"
@@ -203,23 +227,19 @@ elisp code in potentiall *any* file. You've been warned.
          (goto-char (autoc-block-start))
          (previous-line)
          (s-trim (thing-at-point 'line t))))
-   #+END_SRC
 
-   We can also check whether we are in a block, which will be useful later...
-
-   #+BEGIN_SRC emacs-lisp :tangle yes
-  (defun autoc-in-block-p ()
-    "Return t if we are in a block"
-    (interactive)
-    (let ((start (autoc-block-start))
-          (end (autoc-block-end))
-          (pos (point)))
-      (and start end (>= pos start) (<= pos end))))
+     (defun autoc-end-of-current-block ()
+       "Go to the end of the block under point if it exists"
+       (interactive)
+       (autoc-when-in-block
+        (goto-char (autoc-block-end (autoc-block-start)))))
    #+END_SRC
 
 
+* Operation API
 
-* Operations
+Operations are functions that run in a buffer, and can do pretty much anything.
+Most of the time, they operate on a block of text, delimited by markers.
 
 ** Interface
 
@@ -258,6 +278,7 @@ elisp code in potentiall *any* file. You've been warned.
    #+BEGIN_SRC emacs-lisp :tangle yes
   (defun autoc-run-operation (operation args)
     "Run the `operation' with `args' if possible"
+    ;; TODO if len op is 1, lookup in aliases
     (if (autoc-has-operation-fn-p operation)
         (apply (autoc-get-operation-fn operation) args)
       (message (format "Unknown operation: ~A" operation))))
@@ -270,12 +291,24 @@ elisp code in potentiall *any* file. You've been warned.
     (autoc-run-operation 'message '("bla"))
    #+END_EXAMPLE
 
+** Operation Aliases
 
-** Evaluation in Markers
+  Instead of using the full operation names, you can use aliases for the
+  commonly used operations. This can be customised.
 
-   Here we tie together the concept of operations (functions in a special
-   namespace) with autoc markers. We want to be able to take a marker line, get
-   the operation, and call it with the arguments. This is easy.
+  #+begin_src emacs-lisp :tangle yes
+       ;; TODO defcustom
+       (defvar autoc-aliases-alist
+         '(("=" . block)
+           ("\\" . funcall)
+           (">" . format-lines)))
+  #+end_src
+
+** Markers with Operations
+
+   Here we tie together the operations (functions in a special namespace) with
+   =autoc= markers. We want to be able to take a marker line, get the operation,
+   and call it with the arguments. This is easy!
 
    #+BEGIN_SRC emacs-lisp :tangle yes
   (defun autoc-run-line-operation (line)
@@ -290,14 +323,37 @@ elisp code in potentiall *any* file. You've been warned.
 
    #+BEGIN_SRC emacs-lisp :tangle yes
      (defun autoc-run-block-operation ()
-       "Run the current autoc operation block"
+       "Run the autoc operation for the current block"
        (interactive)
-       (when (autoc-in-block-p)
-         (let ((marker-line (autoc-block-get-marker-line)))
-           ;; TODO if len op is 1, lookup in aliases
-           (autoc-run-line-operation marker-line))))
+       (autoc-when-in-block
+        (let ((marker-line (autoc-block-get-marker-line)))
+          (autoc-run-line-operation marker-line))))
    #+END_SRC
 
+
+* Operations Implementation
+
+Here we actually implement some useful operations.
+
+** Helper Macros
+
+   A couple of useful bits of pretty syntax.
+
+#+BEGIN_SRC emacs-lisp :tangle yes
+  (defmacro autoc-defop (name lambda-list &rest body)
+    "Define an operation with the given name and argument list"
+    `(autoc-add-operation ',name (lambda ,lambda-list ,@body)))
+#+END_SRC
+
+#+BEGIN_SRC emacs-lisp :tangle yes
+  (defmacro autoc-replace-block (&rest body)
+    "Kill the current block and then execute body at the start of the block"
+    `(autoc-when-in-block
+      (autoc-kill-block)
+      ,@body
+      (newline)
+      (goto-char (autoc-block-start))))
+#+END_SRC
 
 ** Non-Generative Operations
 
@@ -312,7 +368,7 @@ elisp code in potentiall *any* file. You've been warned.
        "alist of source text blocks - key is block name"))
    #+END_SRC
 
-*** % [defun]
+*** defun [%]
 
     Define arbitrary functions in your source code, which can be called later
     with the funcall operation. All other sources can be implemented with this.
@@ -333,8 +389,7 @@ elisp code in potentiall *any* file. You've been warned.
          ))
     #+END_SRC
 
-
-*** ! [defalias]
+*** defalias [!]
 
     Define an alias for an autoc operation.
 
@@ -345,7 +400,7 @@ elisp code in potentiall *any* file. You've been warned.
     This will allow you to use =autoc:^= instead of =autoc:some-operation= in other
     blocks.
 
-*** = [block]
+*** block [<]
 
     The entire text block between the markers is loaded into a buffer local variable.
 
@@ -366,8 +421,7 @@ world
              (autoc-block-contents)))
     #+END_SRC
 
-
-*** - [lines]
+*** lines [=]
 
     Load the block into a buffer local variable as a list of lines, optionally
     doing some processing on them first. The processing is a function that is
@@ -390,7 +444,6 @@ world
               (map 'list fn (s-split "\n" content))))
     #+END_SRC
 
-
 ** Generator Operations
 
    These are all functions that generate the text content of the current block.
@@ -401,18 +454,11 @@ world
    Possibly there should be something in between - e.g. the new block contents
    are returned by the function. I think not. This is more general.
 
-   #+BEGIN_SRC emacs-lisp :tangle yes
-  (defmacro autoc-def-generator (name &body body)
-    `(setf (alist-get name autoc-sources-alist)
-           ()))
-   #+END_SRC
-
-*** \ [funcall]
+*** funcall [!]
 
     Call a function previously defined with /defun/.
 
-
-*** > [format-lines]
+*** format-lines [>]
 
     Take a source block and a format string and apply it to each line in the
     source block to generate the new content.
@@ -427,44 +473,24 @@ world
     Definition:
 
     #+begin_src emacs-lisp :tangle yes
-     (defun autoc--operation-format-lines (lines fmt)
-       (dolist (l (s-split "\n" lines))
-         (newline-and-indent)
-         (insert (replace-regexp-in-string "$" l fmt))))
+      (autoc-defop format-lines (lines fmt)
+        (autoc-replace-block
+         (dolist (l (s-split "\n" lines))
+           (insert (replace-regexp-in-string "$" l fmt))
+           (newline-and-indent))))
     #+end_src
 
+Note, this could also have been done like this:
 
-* Operation Aliases
-
-  Instead of using the full operation names, you can use aliases for the
-  commonly used operations. This can be customised.
-
-  #+begin_src emacs-lisp :tangle yes
-       ;; TODO defcustom
-       (defvar autoc-aliases-alist
-         '(("=" . autoc--operation-block)
-           ("\\" . autoc--operation-funcall)
-           (">" . autoc--operation-format-lines)))
-  #+end_src
+#+BEGIN_EXAMPLE
+(defun autoc--format-lines (lines fmt) ...)
+(autoc-add-operation 'format-lines #'autoc--format-lines)
+#+END_EXAMPLE
 
 
 * Minor Mode
 
   This is a minor mode! See http://nullprogram.com/blog/2013/02/06/.
-
-  There are some special variables...
-
-  #+begin_src emacs-lisp :tangle yes
-    (make-variable-buffer-local
-     (defvar *autoc-marker* nil
-       "Marker used to delimit autoc blocks"))
-
-    (defvar autoc-mode-marker-alist
-      '((c-mode "autoc:")))
-
-    (defvar autoc-operations nil
-      "List of operations autoc knows about")
-  #+end_src
 
 ** Definition
 
@@ -483,9 +509,9 @@ world
 ** Keymap
 
    #+begin_src emacs-lisp :tangle yes
-    (let ((map autoc-mode-map))
-        ;;(define-key map (kbd "C-c C-c") 'autoc-evaluate-block)
-        map)
+     (let ((map autoc-mode-map))
+       (define-key map (kbd "C-c e e") 'autoc-run-block-operation)
+       map)
    #+end_src
 
 ** Font Lock
