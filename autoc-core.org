@@ -97,6 +97,7 @@ elisp code in potentially *any* file. You've been warned.
             (point)
           (progn
             (forward-line -1)
+            (end-of-line)
             (autoc-previous-marker suffix))))))
 
   (defun autoc-next-marker (&optional suffix)
@@ -217,8 +218,8 @@ elisp code in potentially *any* file. You've been warned.
 
      (defun autoc-block-contents ()
        "Get the contents of the current block"
-       (let ((start (autoc-block-start))
-             (end (autoc-block-end start)))
+       (let* ((start (autoc-block-start))
+              (end (autoc-block-end start)))
          (s-trim (buffer-substring-no-properties start end))))
 
      (defun autoc-block-get-marker-line ()
@@ -340,7 +341,7 @@ Here we actually implement some useful operations.
    A couple of useful bits of pretty syntax.
 
 #+BEGIN_SRC emacs-lisp :tangle yes
-  (defmacro autoc-defop (name lambda-list &rest body)
+  (defmacro def-autoc-op (name lambda-list &rest body)
     "Define an operation with the given name and argument list"
     `(autoc-add-operation ',name (lambda ,lambda-list ,@body)))
 #+END_SRC
@@ -350,9 +351,8 @@ Here we actually implement some useful operations.
     "Kill the current block and then execute body at the start of the block"
     `(autoc-when-in-block
       (autoc-kill-block)
-      ,@body
-      (newline)
-      (goto-char (autoc-block-start))))
+      (goto-char (autoc-block-start))
+      ,@body))
 #+END_SRC
 
 ** Non-Generative Operations
@@ -416,9 +416,9 @@ world
     Implementation:
 
     #+BEGIN_SRC emacs-lisp :tangle yes
-     (defun autoc--operation-block (args content)
-       (setf (alist-get name autoc-source-text-alist)
-             (autoc-block-contents)))
+      (def-autoc-op block (name)
+        (autoc-when-in-block
+         (set (make-local-variable name) (autoc-block-contents))))
     #+END_SRC
 
 *** lines [=]
@@ -439,9 +439,12 @@ world
     Implementation:
 
     #+BEGIN_SRC emacs-lisp :tangle yes
-      (defsource block (name fn content)
-        (setf (alist-get name autoc-source-text-alist)
-              (map 'list fn (s-split "\n" content))))
+      (def-autoc-op lines (name &optional fn)
+        (autoc-when-in-block
+         (let* ((content (autoc-block-contents))
+                (modifier (or fn #'identity))
+                (lines (map 'list modifier (s-split "\n" content))))
+           (set (make-local-variable name) lines))))
     #+END_SRC
 
 ** Generator Operations
@@ -460,8 +463,8 @@ world
 
 *** format-lines [>]
 
-    Take a source block and a format string and apply it to each line in the
-    source block to generate the new content.
+    Take a list of lines and a format string and apply it to each line to
+    generate the new content.
 
     #+begin_example
      //autoc:format-lines lines-var "FOO($);"
@@ -473,10 +476,10 @@ world
     Definition:
 
     #+begin_src emacs-lisp :tangle yes
-      (autoc-defop format-lines (lines fmt)
+      (def-autoc-op format-lines (lines fmt)
         (autoc-replace-block
-         (dolist (l (s-split "\n" lines))
-           (insert (replace-regexp-in-string "$" l fmt))
+         (dolist (l (symbol-value lines))
+           (insert (format fmt l))
            (newline-and-indent))))
     #+end_src
 

@@ -21,9 +21,20 @@ void;
 
 
 //autoc:block block1
-
+// some content
+// across multiple lines
 //autoc#
 
+//autoc:lines lines1
+// some content
+// across multiple lines
+//autoc#
+
+
+//autoc:format-lines lines1 "%s WOO"
+// some content WOO
+// across multiple lines WOO
+//autoc#
 
 //autoc:message "hello world woooo"
 
