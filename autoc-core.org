@@ -1,12 +1,12 @@
-#+TITLE: autoc
+#+TITLE: autoc.el
 #+AUTHOR: ric@rmhsilva.com
 
 Terse and flexible in-file code generation.
 
 Reminder: =C-c '= to edit source blocks.
 
-*WARNING* this extension is a security concern. It reads and evaluates arbitrary
-elisp code in potentially *any* file. You've been warned.
+*WARNING* this minor mode is a security concern. It reads and evaluates
+arbitrary elisp code in potentially *any* file. You've been warned.
 
 
 * Overview
