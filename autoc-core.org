@@ -519,4 +519,4 @@ Note, this could also have been done like this:
 
 ** Font Lock
 
-   TODO: Highlight the operations and delimiters
+   TODO: Highlight the autoc markers
